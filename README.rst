@@ -34,7 +34,7 @@ the code lean, making Falcon easier to test, optimize, and deploy.
 
 **Flexible.** Falcon can be deployed in a variety of ways, depending on
 your needs. The framework speaks WSGI, and works great with `Python 2.6
-and 2.7, PyPy, and Python 3.3 <https://travis-ci.org/racker/falcon>`__.
+and 2.7, PyPy, and Python 3.3/3.4 <https://travis-ci.org/racker/falcon>`__.
 There's no tight coupling with any async framework, leaving you free to
 mix-and-match what you need.
 
@@ -48,7 +48,7 @@ Features
 -  DRY request processing using global, resource, and method hooks
 -  Snappy unit testing through WSGI helpers and mocks
 -  20% speed boost when Cython is available
--  Python 2.6, Python 2.7, PyPy and Python 3.3 support
+-  Python 2.6, Python 2.7, PyPy and Python 3.3/3.4 support
 -  Speed, speed, and more speed!
 
 Install
@@ -56,6 +56,31 @@ Install
 
 .. code:: bash
 
+    $ pip install cython falcon
+
+**Installing on OS X Mavericks with Xcode 5.1**
+
+Xcode Command Line Tools are required to compile Cython. Install them with
+this command:
+
+.. code:: bash
+
+    $ xcode-select --install
+
+The Xcode 5.1 CLang compiler treats unrecognized command-line options as
+errors; this can cause problems under Python 2.6, for example:
+
+.. code:: bash
+
+    clang: error: unknown argument: '-mno-fused-madd' [-Wunused-command-line-argument-hard-error-in-future]
+
+You can work around errors caused by unused arguments by setting some
+environment variables:
+
+.. code:: bash
+
+    $ export CFLAGS=-Qunused-arguments
+    $ export CPPFLAGS=-Qunused-arguments
     $ pip install cython falcon
 
 Test
@@ -74,12 +99,14 @@ To test across all supported Python versions:
 Usage
 ~~~~~
 
-Docstrings can be found throughout the Falcon code base for your
-learning pleasure. You can also ask questions in **#falconframework** on
-freenode. We are planning on having real docs eventually and would of course greatly appreciate pull requests to help accelerate that.
+We have started documenting the library at http://falcon.readthedocs.org and we would of course greatly appreciate pull requests to help accelerate that effort.
+
+The docstrings in the Falcon code base are quite extensive, and we recommend keeping a REPL running while learning the framework so that you can query the various modules and classes as you have questions.
 
 You can also check out `Marconi's WSGI driver <https://github.com/openstack/marconi/tree/master/marconi/queues/transport/wsgi>`__ to get a feel for how you might
 leverage Falcon in a real-world app.
+
+Finally, you can always ask questions in **#falconframework** on freenode. The community is very friendly and helpful.
 
 Here is a simple, contrived example showing how to create a Falcon-based API.
 
@@ -135,13 +162,18 @@ Here is a more involved example that demonstrates reading headers and query para
 
     import json
     import logging
+    import uuid
     from wsgiref import simple_server
 
     import falcon
 
 
-    class StorageEngine:
-        pass
+    class StorageEngine(object):
+        def get_things(self, marker, limit):
+            return []
+
+        def add_thing(self, thing):
+            return {'id': str(uuid.uuid4())}
 
 
     class StorageError(Exception):
@@ -198,9 +230,39 @@ Here is a more involved example that demonstrates reading headers and query para
 
     def check_media_type(req, resp, params):
         if not req.client_accepts_json:
-            raise falcon.HTTPUnsupportedMediaType(
-                'This API only supports the JSON media type.',
+            raise falcon.HTTPNotAcceptable(
+                'This API only supports responses encoded as JSON.',
                 href='http://docs.examples.com/api/json')
+
+        if req.method in ('POST', 'PUT'):
+            if not req.content_type == 'application/json':
+                raise falcon.HTTPUnsupportedMediaType(
+                    'This API only supports requests encoded as JSON.',
+                    href='http://docs.examples.com/api/json')
+
+
+    def deserialize(req, resp, resource, params):
+        # req.stream corresponds to the WSGI wsgi.input environ variable,
+        # and allows you to read bytes from the request body.
+        #
+        # See also: PEP 3333
+        body = req.stream.read()
+        if not body:
+            raise falcon.HTTPBadRequest('Empty request body',
+                                        'A valid JSON document is required.')
+
+        try:
+            params['doc'] = json.loads(body.decode('utf-8'))
+
+        except (ValueError, UnicodeDecodeError):
+            raise falcon.HTTPError(falcon.HTTP_753,
+                                   'Malformed JSON',
+                                   'Could not decode the request body. The '
+                                   'JSON was incorrect or not encoded as UTF-8.')
+
+
+    def serialize(req, resp, resource):
+        resp.body = json.dumps(req.context['doc'])
 
 
     class ThingsResource:
@@ -209,6 +271,7 @@ Here is a more involved example that demonstrates reading headers and query para
             self.db = db
             self.logger = logging.getLogger('thingsapp.' + __name__)
 
+        @falcon.after(serialize)
         def on_get(self, req, resp, user_id):
             marker = req.get_param('marker') or ''
             limit = req.get_param_as_int('limit') or 50
@@ -227,31 +290,22 @@ Here is a more involved example that demonstrates reading headers and query para
                     description,
                     30)
 
-            resp.set_header('X-Powered-By', 'Donuts')
+            # An alternative way of doing DRY serialization would be to
+            # create a custom class that inherits from falcon.Request. This
+            # class could, for example, have an additional 'doc' property
+            # that would serialize to JSON under the covers.
+            req.context['doc'] = result
+
+            resp.set_header('X-Powered-By', 'Small Furry Creatures')
             resp.status = falcon.HTTP_200
-            resp.body = json.dumps(result)
 
-        def on_post(self, req, resp, user_id):
-            try:
-                # req.stream corresponds to the WSGI wsgi.input environ variable,
-                # and allows you to read bytes from the request body.
-                #
-                # json.load assumes the input stream is encoded at utf-8 if the
-                # encoding is not specified explicitly.
-                #
-                # See also: PEP 3333
-                thing = json.load(req.stream, 'utf-8')
-
-            except ValueError:
-                raise falcon.HTTPError(falcon.HTTP_753,
-                                       'Malformed JSON',
-                                       'Could not decode the request body. The '
-                                       'JSON was incorrect.')
-
-            proper_thing = self.db.add_thing(thing)
+        @falcon.before(deserialize)
+        def on_post(self, req, resp, user_id, doc):
+            proper_thing = self.db.add_thing(doc)
 
             resp.status = falcon.HTTP_201
-            resp.location = '/%s/things/%s' % (user_id, proper_thing.id)
+            resp.location = '/%s/things/%s' % (user_id, proper_thing['id'])
+
 
     # Configure your WSGI server to load "things.app" (app is a WSGI callable)
     app = falcon.API(before=[auth, check_media_type])
@@ -264,9 +318,9 @@ Here is a more involved example that demonstrates reading headers and query para
     # the given handler.
     app.add_error_handler(StorageError, StorageError.handle)
 
-    # Proxy some things to another service. This example shows how you might
+    # Proxy some things to another service; this example shows how you might
     # send parts of an API off to a legacy system that hasn't been upgraded
-    # yet, or perhaps is a single cluster that all datacenters have to share.
+    # yet, or perhaps is a single cluster that all data centers have to share.
     sink = SinkAdapter()
     app.add_sink(sink, r'/v1/[charts|inventory]')
 

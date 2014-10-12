@@ -2,7 +2,7 @@ import falcon
 import falcon.testing as testing
 
 
-class TestQueryParams(testing.TestBase):
+class _TestQueryParams(testing.TestBase):
 
     def before(self):
         self.resource = testing.TestResource()
@@ -50,24 +50,31 @@ class TestQueryParams(testing.TestBase):
         self.simulate_request('/', query_string=query_string)
 
         req = self.resource.req
-        self.assertEqual(req.get_param('id'), u'23,42')
+
+        # NOTE(kgriffs): For lists, get_param will return one of the
+        # elements, but which one it will choose is undefined.
+        self.assertIn(req.get_param('id'), [u'23', u'42'])
+
         self.assertEqual(req.get_param_as_list('id', int), [23, 42])
         self.assertEqual(req.get_param('q'), u'\u8c46 \u74e3')
 
     def test_allowed_names(self):
-        query_string = ('p=0&p1=23&2p=foo&some-thing=that&blank=&some_thing=x&'
-                        '-bogus=foo&more.things=blah')
+        query_string = ('p=0&p1=23&2p=foo&some-thing=that&blank=&'
+                        'some_thing=x&-bogus=foo&more.things=blah&'
+                        '_thing=42&_charset_=utf-8')
         self.simulate_request('/', query_string=query_string)
 
         req = self.resource.req
         self.assertEqual(req.get_param('p'), '0')
         self.assertEqual(req.get_param('p1'), '23')
-        self.assertIs(req.get_param('2p'), None)
+        self.assertEqual(req.get_param('2p'), 'foo')
         self.assertEqual(req.get_param('some-thing'), 'that')
         self.assertIs(req.get_param('blank'), None)
         self.assertEqual(req.get_param('some_thing'), 'x')
-        self.assertIs(req.get_param('-bogus'), None)
+        self.assertEqual(req.get_param('-bogus'), 'foo')
         self.assertEqual(req.get_param('more.things'), 'blah')
+        self.assertEqual(req.get_param('_thing'), '42')
+        self.assertEqual(req.get_param('_charset_'), 'utf-8')
 
     def test_required(self):
         query_string = ''
@@ -192,30 +199,42 @@ class TestQueryParams(testing.TestBase):
     def test_list_type(self):
         query_string = ('colors=red,green,blue&limit=1'
                         '&list-ish1=f,,x&list-ish2=,0&list-ish3=a,,,b'
-                        '&empty1=&empty2=,&empty3=,,')
+                        '&empty1=&empty2=,&empty3=,,'
+                        '&thing_one=1,,3'
+                        '&thing_two=1&thing_two=&thing_two=3')
         self.simulate_request('/', query_string=query_string)
 
         req = self.resource.req
-        self.assertEqual(req.get_param('colors'), 'red,green,blue')
+
+        # NOTE(kgriffs): For lists, get_param will return one of the
+        # elements, but which one it will choose is undefined.
+        self.assertIn(req.get_param('colors'), ('red', 'green', 'blue'))
+
         self.assertEqual(req.get_param_as_list('colors'),
                          ['red', 'green', 'blue'])
         self.assertEqual(req.get_param_as_list('limit'), ['1'])
         self.assertIs(req.get_param_as_list('marker'), None)
 
         self.assertEqual(req.get_param_as_list('empty1'), None)
-        self.assertEqual(req.get_param_as_list('empty2'), [None, None])
-        self.assertEqual(req.get_param_as_list('empty3'), [None, None, None])
+        self.assertEqual(req.get_param_as_list('empty2'), [])
+        self.assertEqual(req.get_param_as_list('empty3'), [])
 
         self.assertEqual(req.get_param_as_list('list-ish1'),
-                         ['f', None, 'x'])
+                         ['f', 'x'])
 
         # Ensure that '0' doesn't get translated to None
         self.assertEqual(req.get_param_as_list('list-ish2'),
-                         [None, '0'])
+                         ['0'])
 
         # Ensure that '0' doesn't get translated to None
         self.assertEqual(req.get_param_as_list('list-ish3'),
-                         ['a', None, None, 'b'])
+                         ['a', 'b'])
+
+        # Ensure consistency between list conventions
+        self.assertEqual(req.get_param_as_list('thing_one'),
+                         ['1', '3'])
+        self.assertEqual(req.get_param_as_list('thing_one'),
+                         req.get_param_as_list('thing_two'))
 
         store = {}
         self.assertEqual(req.get_param_as_list('limit', store=store), ['1'])
@@ -226,19 +245,89 @@ class TestQueryParams(testing.TestBase):
         self.simulate_request('/', query_string=query_string)
 
         req = self.resource.req
-        self.assertEqual(req.get_param('coord'), '1.4,13,15.1')
+
+        # NOTE(kgriffs): For lists, get_param will return one of the
+        # elements, but which one it will choose is undefined.
+        self.assertIn(req.get_param('coord'), ('1.4', '13', '15.1'))
 
         expected = [1.4, 13.0, 15.1]
         actual = req.get_param_as_list('coord', transform=float)
         self.assertEqual(actual, expected)
 
-        expected = ['4', None, '1']
+        expected = ['4', '1']
         actual = req.get_param_as_list('things', transform=str)
         self.assertEqual(actual, expected)
 
-        expected = [4, None, 1]
+        expected = [4, 1]
         actual = req.get_param_as_list('things', transform=int)
         self.assertEqual(actual, expected)
 
         self.assertRaises(falcon.HTTPBadRequest,
                           req.get_param_as_list, 'coord', transform=int)
+
+    def test_param_property(self):
+        query_string = 'ant=4&bee=3&cat=2&dog=1'
+        self.simulate_request('/', query_string=query_string)
+
+        req = self.resource.req
+        self.assertEqual(
+            sorted(req.params.items()),
+            [('ant', '4'), ('bee', '3'), ('cat', '2'), ('dog', '1')])
+
+    def test_multiple_form_keys(self):
+        query_string = 'ant=1&ant=2&bee=3&cat=6&cat=5&cat=4'
+        self.simulate_request('/', query_string=query_string)
+
+        req = self.resource.req
+        # By definition, we cannot guarantee which of the multiple keys will
+        # be returned by .get_param().
+        self.assertIn(req.get_param('ant'), ('1', '2'))
+        # There is only one 'bee' key so it remains a scalar.
+        self.assertEqual(req.get_param('bee'), '3')
+        # There are three 'cat' keys; order is preserved.
+        self.assertIn(req.get_param('cat'), ('6', '5', '4'))
+
+    def test_multiple_keys_as_bool(self):
+        query_string = 'ant=true&ant=yes&ant=True'
+        self.simulate_request('/', query_string=query_string)
+        req = self.resource.req
+        self.assertEqual(req.get_param_as_bool('ant'), True)
+
+    def test_multiple_keys_as_int(self):
+        query_string = 'ant=1&ant=2&ant=3'
+        self.simulate_request('/', query_string=query_string)
+        req = self.resource.req
+        self.assertIn(req.get_param_as_int('ant'), (1, 2, 3))
+
+    def test_multiple_form_keys_as_list(self):
+        query_string = 'ant=1&ant=2&bee=3&cat=6&cat=5&cat=4'
+        self.simulate_request('/', query_string=query_string)
+
+        req = self.resource.req
+        # There are two 'ant' keys.
+        self.assertEqual(req.get_param_as_list('ant'), ['1', '2'])
+        # There is only one 'bee' key..
+        self.assertEqual(req.get_param_as_list('bee'), ['3'])
+        # There are three 'cat' keys; order is preserved.
+        self.assertEqual(req.get_param_as_list('cat'), ['6', '5', '4'])
+
+
+class PostQueryParams(_TestQueryParams):
+    def simulate_request(self, path, query_string):
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        super(PostQueryParams, self).simulate_request(path, body=query_string,
+                                                      headers=headers)
+
+    def test_non_ascii(self):
+        value = u'\u8c46\u74e3'
+        query_string = b'q=' + value.encode('utf-8')
+        self.simulate_request('/', query_string=query_string)
+
+        req = self.resource.req
+        self.assertEqual(req.get_param('q'), None)
+
+
+class GetQueryParams(_TestQueryParams):
+    def simulate_request(self, path, query_string):
+        super(GetQueryParams, self).simulate_request(
+            path, query_string=query_string)

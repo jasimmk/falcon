@@ -1,34 +1,30 @@
-"""Includes private helpers for the API class.
+# Copyright 2013 by Rackspace Hosting, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-Copyright 2013 by Rackspace Hosting, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-   http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-
-"""
-
-import inspect
 import re
-from functools import wraps
+import six
 
 from falcon import responders, HTTP_METHODS
 import falcon.status_codes as status
+from falcon.hooks import _wrap_with_hooks
 
+STREAM_BLOCK_SIZE = 8 * 1024  # 8 KiB
 
 IGNORE_BODY_STATUS_CODES = set([
     status.HTTP_100,
     status.HTTP_101,
     status.HTTP_204,
-    status.HTTP_416,
     status.HTTP_304
 ])
 
@@ -95,17 +91,21 @@ def set_content_length(resp):
     return content_length
 
 
-def get_body(resp):
+def get_body(resp, wsgi_file_wrapper=None):
     """Converts resp content into an iterable as required by PEP 333
 
     Args:
         resp: Instance of falcon.Response
+        wsgi_file_wrapper: Reference to wsgi.file_wrapper from the
+            WSGI environ dict, if provided by the WSGI server. Used
+            when resp.stream is a file-like object (default None).
 
     Returns:
-        * If resp.body is not None, returns [resp.body], encoded as UTF-8 if
+        * If resp.body is not *None*, returns [resp.body], encoded as UTF-8 if
           it is a Unicode string. Bytestrings are returned as-is.
-        * If resp.data is not None, returns [resp.data]
-        * If resp.stream is not None, returns resp.stream
+        * If resp.data is not *None*, returns [resp.data]
+        * If resp.stream is not *None*, returns resp.stream
+          iterable using wsgi.file_wrapper, if possible.
         * Otherwise, returns []
 
     """
@@ -119,9 +119,50 @@ def get_body(resp):
         return [resp.data]
 
     elif resp.stream is not None:
+        stream = resp.stream
+
+        # NOTE(kgriffs): Heuristic to quickly check if
+        # stream is file-like. Not perfect, but should be
+        # good enough until proven otherwise.
+        if hasattr(stream, 'read'):
+            if wsgi_file_wrapper is not None:
+                # TODO(kgriffs): Make block size configurable at the
+                # global level, pending experimentation to see how
+                # useful that would be.
+                #
+                # See also the discussion on the PR: http://goo.gl/XGrtDz
+                return wsgi_file_wrapper(stream, STREAM_BLOCK_SIZE)
+            else:
+                return iter(lambda: stream.read(STREAM_BLOCK_SIZE),
+                            b'')
+
         return resp.stream
 
     return []
+
+
+def compose_error_response(req, resp, ex):
+
+    preferred = req.client_prefers(('application/xml',
+                                    'text/xml',
+                                    'application/json'))
+
+    if preferred is not None:
+        if preferred == 'application/json':
+            resp.body = ex.json()
+        else:
+            resp.body = ex.xml()
+
+    resp.status = ex.status
+
+    if ex.headers is not None:
+        resp.set_headers(ex.headers)
+
+    # NOTE(kgriffs): Do this after setting headers from ex.headers,
+    # so that we will override Content-Type if it was mistakenly set
+    # by the app.
+    if resp.body is not None:
+        resp.content_type = preferred
 
 
 def compile_uri_template(template):
@@ -134,14 +175,16 @@ def compile_uri_template(template):
 
     Args:
         template: A Level 1 URI template. Method responders must accept, as
-        arguments, all fields specified in the template (default '/').
+            arguments, all fields specified in the template (default '/').
+            Note that field names are restricted to ASCII a-z, A-Z, and
+            the underscore '_'.
 
     Returns:
         (template_field_names, template_regex)
 
     """
 
-    if not isinstance(template, str):
+    if not isinstance(template, six.string_types):
         raise TypeError('uri_template is not a string')
 
     if not template.startswith('/'):
@@ -198,89 +241,28 @@ def create_http_method_map(resource, uri_fields, before, after):
         else:
             # Usually expect a method, but any callable will do
             if callable(responder):
-                responder = _wrap_with_hooks(before, after, responder)
+                responder = _wrap_with_hooks(
+                    before, after, responder, resource)
                 method_map[method] = responder
 
     # Attach a resource for unsupported HTTP methods
     allowed_methods = sorted(list(method_map.keys()))
 
+    # NOTE(sebasmagri): We want the OPTIONS and 405 (Not Allowed) methods
+    # responders to be wrapped on global hooks
     if 'OPTIONS' not in method_map:
         # OPTIONS itself is intentionally excluded from the Allow header
-        # This default responder does not run the hooks
-        method_map['OPTIONS'] = responders.create_default_options(
+        responder = responders.create_default_options(
             allowed_methods)
+        method_map['OPTIONS'] = _wrap_with_hooks(
+            before, after, responder, resource)
         allowed_methods.append('OPTIONS')
 
     na_responder = responders.create_method_not_allowed(allowed_methods)
 
     for method in HTTP_METHODS:
         if method not in allowed_methods:
-            method_map[method] = na_responder
+            method_map[method] = _wrap_with_hooks(
+                before, after, na_responder, resource)
 
     return method_map
-
-
-#-----------------------------------------------------------------------------
-# Helpers
-#-----------------------------------------------------------------------------
-
-
-def _wrap_with_hooks(before, after, responder):
-    if after is not None:
-        for action in after:
-            responder = _wrap_with_after(action, responder)
-
-    if before is not None:
-        # Wrap in reversed order to achieve natural (first...last)
-        # execution order.
-        for action in reversed(before):
-            responder = _wrap_with_before(action, responder)
-
-    return responder
-
-
-def _propagate_argspec(wrapper, responder):
-    if hasattr(responder, 'wrapped_argspec'):
-        wrapper.wrapped_argspec = responder.wrapped_argspec
-    else:
-        wrapper.wrapped_argspec = inspect.getargspec(responder)
-
-
-def _wrap_with_before(action, responder):
-    """Execute the given action function before a bound responder.
-
-    Args:
-        action: A function with a similar signature to a resource responder
-            method, taking (req, resp, params).
-        responder: The bound responder to wrap.
-
-    """
-
-    @wraps(responder)
-    def do_before(req, resp, **kwargs):
-        action(req, resp, kwargs)
-        responder(req, resp, **kwargs)
-
-    _propagate_argspec(do_before, responder)
-
-    return do_before
-
-
-def _wrap_with_after(action, responder):
-    """Execute the given action function after a bound responder.
-
-    Args:
-        action: A function with a signature similar to a resource responder
-            method, taking (req, resp).
-        responder: The bound responder to wrap.
-
-    """
-
-    @wraps(responder)
-    def do_after(req, resp, **kwargs):
-        responder(req, resp, **kwargs)
-        action(req, resp)
-
-    _propagate_argspec(do_after, responder)
-
-    return do_after

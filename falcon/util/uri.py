@@ -1,20 +1,16 @@
-"""Defines URI utilities
-
-Copyright 2014 by Rackspace Hosting, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-   http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-
-"""
+# Copyright 2013 by Rackspace Hosting, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 import re
 
@@ -32,9 +28,9 @@ _ALL_ALLOWED = _UNRESERVED + _DELIMITERS
 
 _HEX_DIGITS = '0123456789ABCDEFabcdef'
 
-# NOTE(kgriffs): Match query string fields that have names that
-# start with a letter.
-_QS_PATTERN = re.compile(r'(?<![0-9])([a-zA-Z][a-zA-Z_0-9\-.]*)=([^&]+)')
+# NOTE(kgriffs): Match query string fields. If this is modified, take
+# care not to reduce performance.
+_QS_PATTERN = re.compile(r'(?:&|\A)([^=]+)=([^&]+)')
 
 
 def _create_char_encoder(allowed_chars):
@@ -86,25 +82,24 @@ encode = _create_str_encoder(False)
 encode.__name__ = 'encode'
 encode.__doc__ = """Encodes a full or relative URI according to RFC 3986.
 
-Escapes disallowed characters by percent-encoding them according
-to RFC 3986.
-
-This function is faster in the average case than the similar
-`quote` function found in urlib. It also strives to be easier
-to use by assuming a sensible default of allowed characters.
-
 RFC 3986 defines a set of "unreserved" characters as well as a
-set of "reserved" characters used as delimiters.
+set of "reserved" characters used as delimiters. This function escapes
+all other "disallowed" characters by percent-encoding them.
+
+Note:
+    This utility is faster in the average case than the similar
+    `quote` function found in urlib. It also strives to be easier
+    to use by assuming a sensible default of allowed characters.
 
 Args:
-    uri: URI or part of a URI to encode. If this is a wide
-        string (i.e., six.text_type), it will be encoded to
+    uri (str): URI or part of a URI to encode. If this is a wide
+        string (i.e., *six.text_type*), it will be encoded to
         a UTF-8 byte array and any multibyte sequences will
         be percent-encoded as-is.
 
 Returns:
-    An escaped version of `uri`, where all disallowed characters
-    have been percent-encoded.
+    str: An escaped version of `uri`, where all disallowed characters
+        have been percent-encoded.
 
 """
 
@@ -113,38 +108,34 @@ encode_value = _create_str_encoder(True)
 encode_value.name = 'encode_value'
 encode_value.__doc__ = """Encodes a value string according to RFC 3986.
 
-Escapes disallowed characters by percent-encoding them according
-to RFC 3986.
+Disallowed characters are percent-encoded in a way that models
+``urllib.parse.quote(safe="~")``. However, the Falcon function is faster
+in the average case than the similar `quote` function found in urlib.
+It also strives to be easier to use by assuming a sensible default
+of allowed characters.
 
-This function is faster in the average case than the similar
-`quote` function found in urlib. It also strives to be easier
-to use by assuming a sensible default of allowed characters.
+All reserved characters are lumped together into a single set of
+"delimiters", and everything in that set is escaped.
 
-This models urllib.parse.quote(safe="~").
-
-RFC 3986 defines a set of "unreserved" characters as well as a
-set of "reserved" characters used as delimiters.
-
-This function keeps things simply by lumping all reserved
-characters into a single set of "delimiters", and everything in
-that set is escaped.
+Note:
+    RFC 3986 defines a set of "unreserved" characters as well as a
+    set of "reserved" characters used as delimiters.
 
 Args:
-    uri: Value to encode. It is assumed not to cross delimiter
+    uri (str): URI fragment to encode. It is assumed not to cross delimiter
         boundaries, and so any reserved URI delimiter characters
         included in it will be escaped. If `value` is a wide
-        string (i.e., six.text_type), it will be encoded to
+        string (i.e., *six.text_type*), it will be encoded to
         a UTF-8 byte array and any multibyte sequences will
         be percent-encoded as-is.
 
 Returns:
-    An escaped version of `value`, where all disallowed characters
-    have been percent-encoded.
+    str: An escaped version of `uri`, where all disallowed characters
+        have been percent-encoded.
 
 """
 
 # NOTE(kgriffs): This is actually covered, but not in py33; hence the pragma
-
 if six.PY2:  # pragma: no cover
 
     # This map construction is based on urllib
@@ -160,12 +151,12 @@ if six.PY2:  # pragma: no cover
         UTF-8 mutibyte sequences.
 
         Args:
-            encoded_uri: An encoded URI (full or partial).
+            encoded_uri (str): An encoded URI (full or partial).
 
         Returns:
-            A decoded URL. Will be of type `unicode` on Python 2 IFF the
-            URL contained escaped non-ASCII characters, in which case UTF-8
-            is assumed per RFC 3986.
+            str: A decoded URL. Will be of type *unicode* on Python 2 IFF the
+                URL contained escaped non-ASCII characters, in which case
+                UTF-8 is assumed per RFC 3986.
 
         """
 
@@ -222,14 +213,14 @@ else:  # pragma: no cover
     def decode(encoded_uri):
         """Decodes percent-encoded characters in a URI or query string.
 
-        This function models the behavior of urllib.parse.unquote_plus,
+        This function models the behavior of `urllib.parse.unquote_plus`,
         albeit in a faster, more straightforward manner.
 
         Args:
-            encoded_uri: An encoded URI (full or partial).
+            encoded_uri (str): An encoded URI (full or partial).
 
         Returns:
-            A decoded URL. If the URL contains escaped non-ASCII
+            str: A decoded URL. If the URL contains escaped non-ASCII
             characters, UTF-8 is assumed per RFC 3986.
 
         """
@@ -262,19 +253,28 @@ else:  # pragma: no cover
 
 
 def parse_query_string(query_string):
-    """Parse a query string into a dict
+    """Parse a query string into a dict.
 
     Query string parameters are assumed to use standard form-encoding. Only
     parameters with values are parsed. for example, given "foo=bar&flag",
     this function would ignore "flag".
 
+    Note:
+        In addition to the standard HTML form-based method for specifying
+        lists by repeating a given param multiple times, Falcon supports
+        a more compact form in which the param may be given a single time
+        but set to a list of comma-separated elements (e.g., 'foo=a,b,c').
+
+        The two different ways of specifying lists may not be mixed in
+        a single query string for the same parameter.
+
     Args:
-        query_string: The query string to parse
+        query_string (str): The query string to parse
 
     Returns:
-        A dict containing (name, value) pairs, one per query parameter. Note
-        that value will be a string, and that name is case-sensitive, both
-        copied directly from the query string.
+        dict: A dict containing ``(name, value)`` tuples, one per query
+            parameter. Note that *value* will be a string or list of
+            strings.
 
     Raises:
         TypeError: query_string was not a string or buffer
@@ -285,6 +285,29 @@ def parse_query_string(query_string):
     # comprehensions (tested under py27, py33). Go figure!
     params = {}
     for k, v in _QS_PATTERN.findall(query_string):
-        params[k] = v
+        if k in params:
+            # The key was present more than once in the POST data.  Convert to
+            # a list, or append the next value to the list.
+            old_value = params[k]
+            if isinstance(old_value, list):
+                old_value.append(v)
+            else:
+                params[k] = [old_value, v]
+
+        else:
+            if ',' in v:
+                # NOTE(kgriffs): Falcon supports a more compact form of
+                # lists, in which the elements are comma-separated and
+                # assigned to a single param instance. If it turns out that
+                # very few people use this, it can be deprecated at some
+                # point.
+                v = v.split(',')
+
+                # NOTE(kgriffs): Normalize the result in the case that
+                # some elements are empty strings, such that the result
+                # will be the same for 'foo=1,,3' as 'foo=1&foo=&foo=3'.
+                v = [element for element in v if element]
+
+            params[k] = v
 
     return params

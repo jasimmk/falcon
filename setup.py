@@ -10,8 +10,6 @@ VERSION = VERSION.__version__
 # NOTE(kgriffs): python-mimeparse is newer than mimeparse, supports Py3
 # TODO(kgriffs): Fork and optimize/modernize python-mimeparse
 REQUIRES = ['six', 'python-mimeparse']
-if sys.version_info < (2, 7):
-    REQUIRES.append('ordereddict')
 
 PYPY = True
 CYTHON = False
@@ -74,13 +72,14 @@ setup(
         'Programming Language :: Python :: 2.6',
         'Programming Language :: Python :: 2.7',
         'Programming Language :: Python :: 3.3',
+        'Programming Language :: Python :: 3.4',
     ],
     keywords='wsgi web api framework rest http cloud',
     author='Kurt Griffiths',
     author_email='mail@kgriffs.com',
     url='http://falconframework.org',
     license='Apache 2.0',
-    packages=find_packages(exclude=['*.tests']),
+    packages=find_packages(exclude=['tests']),
     include_package_data=True,
     zip_safe=False,
     install_requires=REQUIRES,
